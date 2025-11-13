@@ -1,0 +1,258 @@
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ----------------------------------------
+// ENUMS (Pre-defined choices)
+// ----------------------------------------
+
+enum UserRole {
+  SUPER_ADMIN //the app owner
+  DOCTOR      //the doctor who is paying for the service
+  PRO         //the pro(public relation officer) using the app for the doctor
+  PATIENT     //the patient using the app for booking appointments or see the presctiptions
+}
+
+enum SubscriptionStatus {
+  TRIALING // 7 days free trial (FIXED TYPO)
+  ACTIVE     // active subscription
+  CANCELED   // canceled subscription
+  INACTIVE   // trial ended not paid
+}
+
+enum AppointmentStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELED
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}
+
+// ----------------------------------------
+// AUTHENTICATION & CORE MODELS
+// ----------------------------------------
+
+model User {
+  id              String         @id @default(cuid())
+  email           String         @unique
+  hashedPassword  String
+  role            UserRole       @default(PATIENT)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  
+  // Relations
+  doctorProfile   DoctorProfile?  
+  proProfile      ProProfile?      
+  patientProfile  PatientProfile?  
+}
+
+
+// ----------------------------------------
+// ROLE-SPECIFIC PROFILES
+// ----------------------------------------
+
+model DoctorProfile {
+  id               String      @id @default(cuid())
+  user             User        @relation(fields: [userId], references: [id])
+  userId           String      @unique //link to the main User account
+  name             String      //Doctor's full name
+  specialization   String?     //e.g., "Cardiologist"
+  phone            String?     
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  
+  //subscription details
+  subscriptionStatus SubscriptionStatus @default(TRIALING)
+  trialEndsAt        DateTime?          //set for 7 days after signup
+
+  // --- Relationships ---
+  assistants    ProProfile[]       @relation("DoctorToPro")
+  patients      PatientProfile[]   @relation("DoctorToPatient")
+  appointments  Appointment[]
+  prescriptions Prescription[]
+  payments      Payment[]
+  templates     PrescriptionTemplate[] 
+}
+
+model ProProfile {
+  id        String   @id @default(cuid())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String   @unique //link to the main User account
+  name      String   //Pro's full name
+  phone     String?  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // --- Relationships ---
+  doctor    DoctorProfile @relation("DoctorToPro", fields: [doctorId], references: [id])
+  doctorId  String
+}
+
+model PatientProfile {
+  id          String      @id @default(cuid())
+  user        User?       @relation(fields: [userId], references: [id])
+  userId      String?     @unique //link to the main User account
+  name        String
+  phone       String?     
+  gender      String?     //e.g., "Male"
+  address     String?
+  dateOfBirth DateTime?
+
+  // --- Relationships ---
+  // This links a patient to the doctor who registered them
+  registeredBy  DoctorProfile @relation("DoctorToPatient", fields: [doctorId], references: [id])
+  doctorId      String
+  appointments  Appointment[]
+  prescriptions Prescription[] 
+}
+
+
+// ----------------------------------------
+// APP FEATURES
+// ----------------------------------------
+
+model Appointment {
+  id        String            @id @default(cuid())
+  dateTime  DateTime          
+  status    AppointmentStatus @default(SCHEDULED) // ADDED ENUM
+
+  // --- Relationships ---
+  doctor    DoctorProfile @relation(fields: [doctorId], references: [id])
+  doctorId  String
+
+  // ADDED GUEST LOGIC
+  patient   PatientProfile? @relation(fields: [patientId], references: [id])
+  patientId String?         // Made optional
+
+  //for 'Guest' patients not registered
+  guestPatientName String?
+  guestAge         Int?
+  guestGender      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Prescription {
+  id          String   @id @default(cuid())
+  symptoms    String?
+  vitals      String?
+  diagnosis   String?
+  advice      String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // --- Relationships ---
+  doctor    DoctorProfile @relation(fields: [doctorId], references: [id])
+  doctorId  String
+
+  // This is the link to a REGISTERED patient.
+  // FIXED: Made optional for guest patients
+  patient   PatientProfile? @relation(fields: [patientId], references: [id])
+  patientId String?
+
+  //for 'Guest' patients not registered
+  guestPatientName String?
+  guestAge         Int?
+  guestGender      String?
+
+  //the actual pesctibed medicines
+  prescribedMedicines PrescribedMedicine[]
+  prescribedTests     PrescribedTest[] 
+}
+
+
+// ----------------------------------------
+// DATA DATABASES (Managed by SUPER_ADMIN)
+// ----------------------------------------
+
+model Medicine {
+  id       String   @id @default(cuid())
+  name     String   @unique
+  strength String?
+  type     String?  //e.g., "Tablet", "Syrup"
+
+  // --- Relationships ---
+  prescriptions PrescribedMedicine[]
+}
+
+model Test {
+  id    String @id @default(cuid())
+  name  String @unique
+  type  String? //e.g., "Blood Test", "X-Ray"
+
+  // --- Relationships ---
+  prescriptions PrescribedTest[] 
+}
+
+// ----------------------------------------
+// LINKING MODELS (for Prescription)
+// ----------------------------------------
+
+model PrescribedMedicine {
+  id           String       @id @default(cuid())
+  instructions String?      //e.g., "1+0+1, Before Meal"
+
+  // --- Relationships ---
+  prescription   Prescription @relation(fields: [prescriptionId], references: [id]) 
+  prescriptionId String
+
+  medicine       Medicine     @relation(fields: [medicineId], references: [id]) // FIXED: Made required
+  medicineId     String    
+}
+
+model PrescribedTest {
+  id    String  @id @default(cuid())
+  notes String? //e.g., "Fasting required"
+
+  // --- Relationships ---
+  prescription   Prescription @relation(fields: [prescriptionId], references: [id])
+  prescriptionId String
+
+  test           Test     @relation(fields: [testId], references: [id]) 
+  testId         String  
+}
+
+
+// ----------------------------------------
+// BILLING & TEMPLATES
+// ----------------------------------------
+
+model Payment {
+  id            String        @id @default(cuid())
+  amount        Float
+  status        PaymentStatus @default(PENDING) // ADDED ENUM
+  transactionId String?       @unique //from payment gateway
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  // --- Relationships ---   
+  doctor    DoctorProfile @relation(fields: [doctorId], references: [id])
+  doctorId  String
+}
+
+model PrescriptionTemplate { // FIXED TYPO
+  id        String   @id @default(cuid())
+  name      String   //e.g., "classic blue"
+  htmlBody  String   //the actual template content
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // --- Relationships ---
+  doctor    DoctorProfile @relation(fields: [doctorId], references: [id])
+  doctorId  String
+
+  @@unique([doctorId, name])
+}
